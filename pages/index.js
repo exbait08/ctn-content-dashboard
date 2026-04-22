@@ -1,10 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  rectSortingStrategy,
+  useSortable,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 const STORAGE_KEY = "ctn-content-calendar-days";
 
 const defaultDays = [
   {
-    id: 1,
+    id: "1",
     date: "2026-04-01",
     title: "Monday Content",
     caption: "",
@@ -12,7 +27,7 @@ const defaultDays = [
     media: [],
   },
   {
-    id: 2,
+    id: "2",
     date: "2026-04-02",
     title: "Tuesday Content",
     caption: "",
@@ -25,11 +40,105 @@ function formatDate(dateStr) {
   const date = new Date(dateStr);
   if (Number.isNaN(date.getTime())) return dateStr;
   return date.toLocaleDateString("en-US", {
-    weekday: "short",
     month: "short",
     day: "numeric",
     year: "numeric",
   });
+}
+
+function monthLabel(date) {
+  return date.toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+  });
+}
+
+function buildMonthGrid(days) {
+  const dates = days.map((d) => new Date(d.date)).filter((d) => !Number.isNaN(d.getTime()));
+  const baseDate = dates.length ? new Date(dates[0]) : new Date();
+
+  const year = baseDate.getFullYear();
+  const month = baseDate.getMonth();
+
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+
+  const startWeekday = firstDay.getDay();
+  const totalDays = lastDay.getDate();
+
+  const cells = [];
+
+  for (let i = 0; i < startWeekday; i++) {
+    cells.push({ type: "empty", id: `empty-start-${i}` });
+  }
+
+  for (let dayNum = 1; dayNum <= totalDays; dayNum++) {
+    const iso = new Date(year, month, dayNum).toISOString().split("T")[0];
+    const entry = days.find((d) => d.date === iso);
+
+    if (entry) {
+      cells.push({ type: "content", id: entry.id, item: entry });
+    } else {
+      cells.push({
+        type: "empty-day",
+        id: `empty-${iso}`,
+        date: iso,
+      });
+    }
+  }
+
+  while (cells.length % 7 !== 0) {
+    cells.push({ type: "empty", id: `empty-end-${cells.length}` });
+  }
+
+  return {
+    label: monthLabel(firstDay),
+    cells,
+  };
+}
+
+function SortableDayCard({ item, isSelected, onSelect }) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id });
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    cursor: "grab",
+    ...styles.dayCard,
+    ...(isSelected ? styles.dayCardSelected : {}),
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} {...attributes} {...listeners} onClick={() => onSelect(item.id)}>
+      <div style={styles.dayCardDate}>{formatDate(item.date)}</div>
+      <div style={styles.dayCardTitle}>{item.title}</div>
+      <div style={styles.dayCardMeta}>
+        {item.mediaType === "video" ? "1 Video" : `${item.media.length}/7 Images`}
+      </div>
+    </div>
+  );
+}
+
+function OverlayCard({ item }) {
+  if (!item) return null;
+
+  return (
+    <div style={{ ...styles.dayCard, ...styles.overlayCard }}>
+      <div style={styles.dayCardDate}>{formatDate(item.date)}</div>
+      <div style={styles.dayCardTitle}>{item.title}</div>
+      <div style={styles.dayCardMeta}>
+        {item.mediaType === "video" ? "1 Video" : `${item.media.length}/7 Images`}
+      </div>
+    </div>
+  );
 }
 
 export default function Home() {
@@ -44,6 +153,7 @@ export default function Home() {
   });
 
   const [selectedId, setSelectedId] = useState(defaultDays[0]?.id || null);
+  const [activeId, setActiveId] = useState(null);
   const [newDay, setNewDay] = useState({
     date: "",
     title: "",
@@ -66,9 +176,19 @@ export default function Home() {
     if (!exists) setSelectedId(days[0].id);
   }, [days, selectedId]);
 
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+
   const selectedDay = useMemo(() => {
     return days.find((day) => day.id === selectedId) || null;
   }, [days, selectedId]);
+
+  const activeDay = useMemo(() => {
+    return days.find((day) => day.id === activeId) || null;
+  }, [days, activeId]);
+
+  const monthGrid = useMemo(() => buildMonthGrid(days), [days]);
+
+  const sortedIds = useMemo(() => days.map((d) => d.id), [days]);
 
   const updateDay = (id, patch) => {
     setDays((prev) => prev.map((day) => (day.id === id ? { ...day, ...patch } : day)));
@@ -82,7 +202,7 @@ export default function Home() {
     if (!newDay.date || !newDay.title.trim()) return;
 
     const created = {
-      id: Date.now(),
+      id: String(Date.now()),
       date: newDay.date,
       title: newDay.title.trim(),
       caption: newDay.caption,
@@ -140,6 +260,30 @@ export default function Home() {
     updateDay(dayId, { mediaType: nextType, media: [] });
   };
 
+  const handleDragStart = (event) => {
+    setActiveId(event.active.id);
+  };
+
+  const handleDragEnd = (event) => {
+    const { active, over } = event;
+    setActiveId(null);
+
+    if (!over || active.id === over.id) return;
+
+    setDays((prev) => {
+      const oldIndex = prev.findIndex((item) => item.id === active.id);
+      const newIndex = prev.findIndex((item) => item.id === over.id);
+
+      if (oldIndex === -1 || newIndex === -1) return prev;
+
+      return arrayMove(prev, oldIndex, newIndex);
+    });
+  };
+
+  const handleDragCancel = () => {
+    setActiveId(null);
+  };
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
@@ -153,8 +297,8 @@ export default function Home() {
         <div style={styles.grid}>
           <div style={styles.sidebar}>
             <div style={styles.sectionTop}>
-              <h2 style={styles.sectionTitle}>Content Days</h2>
-              <p style={styles.sectionText}>Manage your scheduled posts.</p>
+              <h2 style={styles.sectionTitle}>Add Content</h2>
+              <p style={styles.sectionText}>Create a content card, then drag it around the calendar.</p>
             </div>
 
             <div style={styles.addBox}>
@@ -164,7 +308,6 @@ export default function Home() {
                 onChange={(e) => setNewDay((prev) => ({ ...prev, date: e.target.value }))}
                 style={styles.input}
               />
-
               <input
                 type="text"
                 placeholder="Content title"
@@ -172,14 +315,12 @@ export default function Home() {
                 onChange={(e) => setNewDay((prev) => ({ ...prev, title: e.target.value }))}
                 style={styles.input}
               />
-
               <textarea
                 placeholder="Caption"
                 value={newDay.caption}
                 onChange={(e) => setNewDay((prev) => ({ ...prev, caption: e.target.value }))}
                 style={styles.textarea}
               />
-
               <select
                 value={newDay.mediaType}
                 onChange={(e) => setNewDay((prev) => ({ ...prev, mediaType: e.target.value }))}
@@ -188,35 +329,91 @@ export default function Home() {
                 <option value="images">Images (max 7)</option>
                 <option value="video">Video (1)</option>
               </select>
-
-              <button onClick={addDay} style={styles.primaryBtn}>
-                Add Content Day
-              </button>
+              <button onClick={addDay} style={styles.primaryBtn}>Add Content Day</button>
             </div>
 
-            <div style={{ marginTop: 16 }}>
-              {days.map((day) => (
-                <button
-                  key={day.id}
-                  onClick={() => setSelectedId(day.id)}
-                  style={{
-                    ...styles.dayBtn,
-                    ...(selectedId === day.id ? styles.dayBtnActive : {}),
-                  }}
-                >
-                  <div style={{ fontSize: 13, opacity: 0.85 }}>{formatDate(day.date)}</div>
-                  <div style={{ fontWeight: 700, marginTop: 4 }}>{day.title}</div>
-                  <div style={{ fontSize: 12, marginTop: 6 }}>
-                    {day.mediaType === "video" ? "1 Video" : `${day.media.length}/7 Images`}
+            <div style={{ marginTop: 20 }}>
+              <h3 style={styles.miniTitle}>All Content Cards</h3>
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+                onDragCancel={handleDragCancel}
+              >
+                <SortableContext items={sortedIds} strategy={rectSortingStrategy}>
+                  <div style={styles.cardList}>
+                    {days.map((item) => (
+                      <SortableDayCard
+                        key={item.id}
+                        item={item}
+                        isSelected={selectedId === item.id}
+                        onSelect={setSelectedId}
+                      />
+                    ))}
                   </div>
-                </button>
-              ))}
+                </SortableContext>
+
+                <DragOverlay>
+                  <OverlayCard item={activeDay} />
+                </DragOverlay>
+              </DndContext>
             </div>
           </div>
 
           <div style={styles.main}>
+            <div style={styles.calendarCard}>
+              <div style={styles.calendarTop}>
+                <h2 style={{ margin: 0 }}>{monthGrid.label}</h2>
+              </div>
+
+              <div style={styles.weekHeader}>
+                {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+                  <div key={day} style={styles.weekHeaderCell}>{day}</div>
+                ))}
+              </div>
+
+              <div style={styles.calendarGrid}>
+                {monthGrid.cells.map((cell) => {
+                  if (cell.type === "empty") {
+                    return <div key={cell.id} style={{ ...styles.calendarCell, background: "#f8fafc" }} />;
+                  }
+
+                  if (cell.type === "empty-day") {
+                    return (
+                      <div key={cell.id} style={styles.calendarCell}>
+                        <div style={styles.calendarDateMuted}>
+                          {new Date(cell.date).getDate()}
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  const item = cell.item;
+                  const isSelected = selectedId === item.id;
+
+                  return (
+                    <div
+                      key={cell.id}
+                      style={{
+                        ...styles.calendarCell,
+                        ...(isSelected ? styles.calendarCellSelected : {}),
+                      }}
+                      onClick={() => setSelectedId(item.id)}
+                    >
+                      <div style={styles.calendarDate}>{new Date(item.date).getDate()}</div>
+                      <div style={styles.calendarContentTitle}>{item.title}</div>
+                      <div style={styles.calendarContentMeta}>
+                        {item.mediaType === "video" ? "Video" : `${item.media.length} Images`}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
             {selectedDay ? (
-              <>
+              <div style={{ ...styles.card, marginTop: 20 }}>
                 <div style={styles.mainTop}>
                   <div>
                     <h2 style={{ margin: 0 }}>{selectedDay.title}</h2>
@@ -224,117 +421,103 @@ export default function Home() {
                       {formatDate(selectedDay.date)}
                     </p>
                   </div>
-
-                  <button
-                    onClick={() => removeDay(selectedDay.id)}
-                    style={styles.dangerBtn}
-                  >
+                  <button onClick={() => removeDay(selectedDay.id)} style={styles.dangerBtn}>
                     Remove Day
                   </button>
                 </div>
 
-                <div style={styles.card}>
-                  <div style={styles.formRow}>
-                    <div style={styles.field}>
-                      <label style={styles.label}>Content Title</label>
-                      <input
-                        type="text"
-                        value={selectedDay.title}
-                        onChange={(e) =>
-                          updateDay(selectedDay.id, { title: e.target.value })
-                        }
-                        style={styles.input}
-                      />
-                    </div>
-
-                    <div style={styles.field}>
-                      <label style={styles.label}>Date</label>
-                      <input
-                        type="date"
-                        value={selectedDay.date}
-                        onChange={(e) =>
-                          updateDay(selectedDay.id, { date: e.target.value })
-                        }
-                        style={styles.input}
-                      />
-                    </div>
-                  </div>
-
+                <div style={styles.formRow}>
                   <div style={styles.field}>
-                    <label style={styles.label}>Caption</label>
-                    <textarea
-                      value={selectedDay.caption}
-                      onChange={(e) =>
-                        updateDay(selectedDay.id, { caption: e.target.value })
-                      }
-                      style={{ ...styles.textarea, minHeight: 140 }}
+                    <label style={styles.label}>Content Title</label>
+                    <input
+                      type="text"
+                      value={selectedDay.title}
+                      onChange={(e) => updateDay(selectedDay.id, { title: e.target.value })}
+                      style={styles.input}
                     />
                   </div>
 
-                  <div style={styles.mediaPanel}>
-                    <div>
-                      <div style={{ fontWeight: 700 }}>Media Type</div>
-                      <div style={{ fontSize: 13, color: "#64748b", marginTop: 4 }}>
-                        Choose either 1 video or up to 7 images.
-                      </div>
-                    </div>
-
-                    <select
-                      value={selectedDay.mediaType}
-                      onChange={(e) =>
-                        switchMediaType(selectedDay.id, e.target.value)
-                      }
-                      style={{ ...styles.input, maxWidth: 220, marginBottom: 0 }}
-                    >
-                      <option value="images">Images (max 7)</option>
-                      <option value="video">Video (1)</option>
-                    </select>
+                  <div style={styles.field}>
+                    <label style={styles.label}>Date</label>
+                    <input
+                      type="date"
+                      value={selectedDay.date}
+                      onChange={(e) => updateDay(selectedDay.id, { date: e.target.value })}
+                      style={styles.input}
+                    />
                   </div>
-
-                  <div style={{ marginTop: 16, marginBottom: 16 }}>
-                    <label style={styles.primaryBtn}>
-                      {selectedDay.mediaType === "video" ? "Upload Video" : "Upload Images"}
-                      <input
-                        type="file"
-                        accept={selectedDay.mediaType === "video" ? "video/*" : "image/*"}
-                        multiple={selectedDay.mediaType === "images"}
-                        onChange={(e) => handleMediaUpload(e, selectedDay)}
-                        style={{ display: "none" }}
-                      />
-                    </label>
-                  </div>
-
-                  {selectedDay.media.length === 0 ? (
-                    <div style={styles.emptyBox}>No media uploaded yet.</div>
-                  ) : (
-                    <div style={styles.mediaGrid}>
-                      {selectedDay.media.map((item) => (
-                        <div key={item.id} style={styles.mediaCard}>
-                          {item.type === "video" ? (
-                            <video controls style={styles.media}>
-                              <source src={item.url} />
-                            </video>
-                          ) : (
-                            <img src={item.url} alt={item.name} style={styles.media} />
-                          )}
-
-                          <div style={styles.mediaFooter}>
-                            <span style={styles.mediaName}>{item.name}</span>
-                            <button
-                              onClick={() => removeMedia(selectedDay.id, item.id)}
-                              style={styles.smallBtn}
-                            >
-                              Remove
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
-              </>
+
+                <div style={styles.field}>
+                  <label style={styles.label}>Caption</label>
+                  <textarea
+                    value={selectedDay.caption}
+                    onChange={(e) => updateDay(selectedDay.id, { caption: e.target.value })}
+                    style={{ ...styles.textarea, minHeight: 140 }}
+                  />
+                </div>
+
+                <div style={styles.mediaPanel}>
+                  <div>
+                    <div style={{ fontWeight: 700 }}>Media Type</div>
+                    <div style={{ fontSize: 13, color: "#64748b", marginTop: 4 }}>
+                      Choose either 1 video or up to 7 images.
+                    </div>
+                  </div>
+
+                  <select
+                    value={selectedDay.mediaType}
+                    onChange={(e) => switchMediaType(selectedDay.id, e.target.value)}
+                    style={{ ...styles.input, maxWidth: 220, marginBottom: 0 }}
+                  >
+                    <option value="images">Images (max 7)</option>
+                    <option value="video">Video (1)</option>
+                  </select>
+                </div>
+
+                <div style={{ marginTop: 16, marginBottom: 16 }}>
+                  <label style={styles.primaryBtn}>
+                    {selectedDay.mediaType === "video" ? "Upload Video" : "Upload Images"}
+                    <input
+                      type="file"
+                      accept={selectedDay.mediaType === "video" ? "video/*" : "image/*"}
+                      multiple={selectedDay.mediaType === "images"}
+                      onChange={(e) => handleMediaUpload(e, selectedDay)}
+                      style={{ display: "none" }}
+                    />
+                  </label>
+                </div>
+
+                {selectedDay.media.length === 0 ? (
+                  <div style={styles.emptyBox}>No media uploaded yet.</div>
+                ) : (
+                  <div style={styles.mediaGrid}>
+                    {selectedDay.media.map((item) => (
+                      <div key={item.id} style={styles.mediaCard}>
+                        {item.type === "video" ? (
+                          <video controls style={styles.media}>
+                            <source src={item.url} />
+                          </video>
+                        ) : (
+                          <img src={item.url} alt={item.name} style={styles.media} />
+                        )}
+
+                        <div style={styles.mediaFooter}>
+                          <span style={styles.mediaName}>{item.name}</span>
+                          <button
+                            onClick={() => removeMedia(selectedDay.id, item.id)}
+                            style={styles.smallBtn}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             ) : (
-              <div style={styles.emptyBox}>Select or add a content day.</div>
+              <div style={{ ...styles.emptyBox, marginTop: 20 }}>Select or add a content day.</div>
             )}
           </div>
         </div>
@@ -351,7 +534,7 @@ const styles = {
     fontFamily: "Arial, sans-serif",
   },
   container: {
-    maxWidth: "1400px",
+    maxWidth: "1440px",
     margin: "0 auto",
   },
   header: {
@@ -359,11 +542,6 @@ const styles = {
     border: "1px solid #dbe3ee",
     borderRadius: "24px",
     padding: "28px",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: "20px",
-    flexWrap: "wrap",
     boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
     marginBottom: "24px",
   },
@@ -381,7 +559,7 @@ const styles = {
   },
   grid: {
     display: "grid",
-    gridTemplateColumns: "340px 1fr",
+    gridTemplateColumns: "360px 1fr",
     gap: "24px",
   },
   sidebar: {
@@ -465,20 +643,106 @@ const styles = {
     cursor: "pointer",
     fontSize: "12px",
   },
-  dayBtn: {
-    width: "100%",
-    textAlign: "left",
-    padding: "14px",
-    borderRadius: "16px",
-    border: "1px solid #e2e8f0",
-    background: "#fff",
-    marginBottom: "10px",
-    cursor: "pointer",
+  miniTitle: {
+    margin: "0 0 12px 0",
+    fontSize: "15px",
+    color: "#334155",
   },
-  dayBtnActive: {
-    background: "#0f172a",
-    color: "#fff",
-    border: "1px solid #0f172a",
+  cardList: {
+    display: "grid",
+    gap: "12px",
+    maxHeight: "520px",
+    overflowY: "auto",
+    paddingRight: "4px",
+  },
+  dayCard: {
+    background: "#fff",
+    border: "1px solid #dbe3ee",
+    borderRadius: "16px",
+    padding: "14px",
+    boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+  },
+  dayCardSelected: {
+    border: "1px solid #1d4ed8",
+    boxShadow: "0 0 0 2px rgba(29,78,216,0.12)",
+  },
+  overlayCard: {
+    boxShadow: "0 16px 40px rgba(0,0,0,0.18)",
+  },
+  dayCardDate: {
+    fontSize: "12px",
+    color: "#64748b",
+  },
+  dayCardTitle: {
+    fontWeight: 700,
+    color: "#0f172a",
+    marginTop: "4px",
+  },
+  dayCardMeta: {
+    fontSize: "12px",
+    color: "#475569",
+    marginTop: "8px",
+  },
+  calendarCard: {
+    background: "#ffffff",
+    border: "1px solid #dbe3ee",
+    borderRadius: "24px",
+    padding: "20px",
+    boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
+  },
+  calendarTop: {
+    marginBottom: "16px",
+  },
+  weekHeader: {
+    display: "grid",
+    gridTemplateColumns: "repeat(7, 1fr)",
+    gap: "8px",
+    marginBottom: "8px",
+  },
+  weekHeaderCell: {
+    textAlign: "center",
+    fontSize: "12px",
+    color: "#64748b",
+    fontWeight: 700,
+    padding: "6px 0",
+  },
+  calendarGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(7, 1fr)",
+    gap: "8px",
+  },
+  calendarCell: {
+    minHeight: "120px",
+    border: "1px solid #e2e8f0",
+    borderRadius: "16px",
+    background: "#fff",
+    padding: "10px",
+  },
+  calendarCellSelected: {
+    border: "1px solid #1d4ed8",
+    boxShadow: "0 0 0 2px rgba(29,78,216,0.12)",
+  },
+  calendarDate: {
+    fontSize: "12px",
+    fontWeight: 700,
+    color: "#334155",
+    marginBottom: "10px",
+  },
+  calendarDateMuted: {
+    fontSize: "12px",
+    fontWeight: 700,
+    color: "#94a3b8",
+  },
+  calendarContentTitle: {
+    fontSize: "14px",
+    fontWeight: 700,
+    color: "#0f172a",
+    lineHeight: 1.3,
+  },
+  calendarContentMeta: {
+    fontSize: "12px",
+    color: "#64748b",
+    marginTop: "8px",
   },
   mainTop: {
     display: "flex",
