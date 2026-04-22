@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,8 +7,10 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CalendarDays, Image as ImageIcon, Video, Plus, Pencil, Trash2, Upload, Building2 } from "lucide-react";
+import { CalendarDays, Image as ImageIcon, Video, Plus, Trash2 } from "lucide-react";
 import { motion } from "framer-motion";
+
+const STORAGE_KEY = "ctn-content-calendar-days";
 
 const initialDays = [
   {
@@ -69,9 +71,17 @@ function MediaPreview({ item, onRemove }) {
 }
 
 export default function CTNContentCalendarDashboard() {
-  const [days, setDays] = useState(initialDays);
+  const [days, setDays] = useState(() => {
+    if (typeof window === "undefined") return initialDays;
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (!saved) return initialDays;
+    try {
+      return JSON.parse(saved);
+    } catch {
+      return initialDays;
+    }
+  });
   const [selectedId, setSelectedId] = useState(initialDays[0].id);
-  const [logoUrl, setLogoUrl] = useState("/mnt/data/COMMERCIAL TAX NETWORK - LOGO.png");
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [newDay, setNewDay] = useState({
     date: "",
@@ -84,6 +94,18 @@ export default function CTNContentCalendarDashboard() {
     () => days.find((day) => day.id === selectedId) || days[0],
     [days, selectedId]
   );
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(days));
+    }
+  }, [days]);
+
+  useEffect(() => {
+    if (!days.length) return;
+    const exists = days.some((day) => day.id === selectedId);
+    if (!exists) setSelectedId(days[0].id);
+  }, [days, selectedId]);
 
   const updateDay = (id, patch) => {
     setDays((prev) => prev.map((day) => (day.id === id ? { ...day, ...patch } : day)));
@@ -112,11 +134,6 @@ export default function CTNContentCalendarDashboard() {
     setIsAddOpen(false);
   };
 
-  const handleLogoUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setLogoUrl(URL.createObjectURL(file));
-  };
 
   const handleMediaUpload = (e, day) => {
     const files = Array.from(e.target.files || []);
@@ -164,29 +181,12 @@ export default function CTNContentCalendarDashboard() {
           className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm"
         >
           <div className="flex flex-col gap-5 p-6 md:flex-row md:items-center md:justify-between md:p-8">
-            <div className="flex items-center gap-4">
-              <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-2xl border bg-slate-100">
-                {logoUrl ? (
-                  <img src={logoUrl} alt="Commercial Tax Network logo" className="h-full w-full object-contain" />
-                ) : (
-                  <Building2 className="h-10 w-10 text-slate-400" />
-                )}
-              </div>
-              <div>
-                <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Brand Dashboard</p>
-                <h1 className="text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
-                  Commercial Tax Network Content Calendar
-                </h1>
-                <p className="mt-1 text-sm text-slate-600 md:text-base">
-                  Manage daily content, upload 1 video or up to 7 images, and edit captions in one place.
-                </p>
-              </div>
+            <div>
+              <p className="text-sm font-medium uppercase tracking-[0.2em] text-slate-500">Brand Dashboard</p>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
+                Commercial Tax Network Content Calendar
+              </h1>
             </div>
-
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl border px-4 py-3 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50">
-              <Upload className="h-4 w-4" /> Upload Logo
-              <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
-            </label>
           </div>
         </motion.div>
 
