@@ -53,12 +53,13 @@ function monthLabel(date) {
   });
 }
 
-function buildMonthGrid(days) {
-  const dates = days.map((d) => new Date(d.date)).filter((d) => !Number.isNaN(d.getTime()));
-  const baseDate = dates.length ? new Date(dates[0]) : new Date();
+function startOfMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
 
-  const year = baseDate.getFullYear();
-  const month = baseDate.getMonth();
+function buildMonthGrid(days, currentMonth) {
+  const year = currentMonth.getFullYear();
+  const month = currentMonth.getMonth();
 
   const firstDay = new Date(year, month, 1);
   const lastDay = new Date(year, month + 1, 0);
@@ -73,7 +74,13 @@ function buildMonthGrid(days) {
   }
 
   for (let dayNum = 1; dayNum <= totalDays; dayNum++) {
-    const iso = new Date(year, month, dayNum).toISOString().split("T")[0];
+    const localDate = new Date(year, month, dayNum);
+    const iso = [
+      localDate.getFullYear(),
+      String(localDate.getMonth() + 1).padStart(2, "0"),
+      String(localDate.getDate()).padStart(2, "0"),
+    ].join("-");
+
     const entry = days.find((d) => d.date === iso);
 
     if (entry) {
@@ -117,7 +124,13 @@ function SortableDayCard({ item, isSelected, onSelect }) {
   };
 
   return (
-    <div ref={setNodeRef} style={style} {...attributes} {...listeners} onClick={() => onSelect(item.id)}>
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      onClick={() => onSelect(item.id)}
+    >
       <div style={styles.dayCardDate}>{formatDate(item.date)}</div>
       <div style={styles.dayCardTitle}>{item.title}</div>
       <div style={styles.dayCardMeta}>
@@ -154,6 +167,7 @@ export default function Home() {
 
   const [selectedId, setSelectedId] = useState(defaultDays[0]?.id || null);
   const [activeId, setActiveId] = useState(null);
+  const [currentMonth, setCurrentMonth] = useState(() => startOfMonth(new Date()));
   const [newDay, setNewDay] = useState({
     date: "",
     title: "",
@@ -176,7 +190,9 @@ export default function Home() {
     if (!exists) setSelectedId(days[0].id);
   }, [days, selectedId]);
 
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
+  );
 
   const selectedDay = useMemo(() => {
     return days.find((day) => day.id === selectedId) || null;
@@ -186,8 +202,7 @@ export default function Home() {
     return days.find((day) => day.id === activeId) || null;
   }, [days, activeId]);
 
-  const monthGrid = useMemo(() => buildMonthGrid(days), [days]);
-
+  const monthGrid = useMemo(() => buildMonthGrid(days, currentMonth), [days, currentMonth]);
   const sortedIds = useMemo(() => days.map((d) => d.id), [days]);
 
   const updateDay = (id, patch) => {
@@ -215,6 +230,7 @@ export default function Home() {
     );
 
     setSelectedId(created.id);
+    setCurrentMonth(startOfMonth(new Date(newDay.date)));
     setNewDay({
       date: "",
       title: "",
@@ -284,6 +300,18 @@ export default function Home() {
     setActiveId(null);
   };
 
+  const goPrevMonth = () => {
+    setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  };
+
+  const goNextMonth = () => {
+    setCurrentMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  };
+
+  const goToToday = () => {
+    setCurrentMonth(startOfMonth(new Date()));
+  };
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
@@ -298,7 +326,7 @@ export default function Home() {
           <div style={styles.sidebar}>
             <div style={styles.sectionTop}>
               <h2 style={styles.sectionTitle}>Add Content</h2>
-              <p style={styles.sectionText}>Create a content card, then drag it around the calendar.</p>
+              <p style={styles.sectionText}>Create a content card, then choose its exact date.</p>
             </div>
 
             <div style={styles.addBox}>
@@ -364,7 +392,13 @@ export default function Home() {
           <div style={styles.main}>
             <div style={styles.calendarCard}>
               <div style={styles.calendarTop}>
-                <h2 style={{ margin: 0 }}>{monthGrid.label}</h2>
+                <div style={styles.calendarNav}>
+                  <button onClick={goPrevMonth} style={styles.navBtn}>← Prev</button>
+                  <h2 style={{ margin: 0 }}>{monthGrid.label}</h2>
+                  <button onClick={goNextMonth} style={styles.navBtn}>Next →</button>
+                </div>
+
+                <button onClick={goToToday} style={styles.todayBtn}>Today</button>
               </div>
 
               <div style={styles.weekHeader}>
@@ -442,7 +476,10 @@ export default function Home() {
                     <input
                       type="date"
                       value={selectedDay.date}
-                      onChange={(e) => updateDay(selectedDay.id, { date: e.target.value })}
+                      onChange={(e) => {
+                        updateDay(selectedDay.id, { date: e.target.value });
+                        setCurrentMonth(startOfMonth(new Date(e.target.value)));
+                      }}
                       style={styles.input}
                     />
                   </div>
@@ -691,7 +728,35 @@ const styles = {
     boxShadow: "0 2px 10px rgba(0,0,0,0.04)",
   },
   calendarTop: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: "12px",
+    flexWrap: "wrap",
     marginBottom: "16px",
+  },
+  calendarNav: {
+    display: "flex",
+    alignItems: "center",
+    gap: "12px",
+    flexWrap: "wrap",
+  },
+  navBtn: {
+    background: "#fff",
+    border: "1px solid #cbd5e1",
+    borderRadius: "10px",
+    padding: "10px 14px",
+    fontWeight: 700,
+    cursor: "pointer",
+  },
+  todayBtn: {
+    background: "#0f172a",
+    color: "#fff",
+    border: "none",
+    borderRadius: "10px",
+    padding: "10px 14px",
+    fontWeight: 700,
+    cursor: "pointer",
   },
   weekHeader: {
     display: "grid",
